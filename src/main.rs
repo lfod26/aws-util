@@ -11,24 +11,37 @@ use cli::Cli;
 use config::AwsListConfig;
 use ec2::Ec2Client;
 
-/// Runs the interactive configuration procedure: prompts for a profile
-/// name, lists that profile's EC2 instances for fuzzy-selection, saves the
-/// result to the config file, and returns it.
-async fn run_configure() -> Result<AwsListConfig> {
-    let profile = interactive::prompt_profile()?;
+/// Fills in any missing pieces of `config` by prompting the user, saving
+/// the result back to the config file. If `--configure` was passed, the
+/// caller instead passes a fully-empty config so everything is re-prompted.
+async fn resolve_config(mut config: AwsListConfig) -> Result<(AwsListConfig, Ec2Client)> {
+    let mut changed = false;
+
+    if config.profile.is_none() {
+        config.profile = Some(interactive::prompt_profile()?);
+        changed = true;
+    }
+    let profile = config.profile.clone().expect("profile was just set");
 
     let client = Ec2Client::new(&profile).await;
-    let entries = client.list_instances().await?;
-    if entries.is_empty() {
-        bail!("No instances found");
+
+    if config.instance_id.is_none() {
+        let entries = client.list_instances().await?;
+        if entries.is_empty() {
+            bail!("No instances found");
+        }
+
+        let selected = interactive::select_instance(&entries)?;
+        println!("Selected instance: {selected}");
+        config.instance_id = Some(selected.instance_id.clone());
+        changed = true;
     }
 
-    let selected = interactive::select_instance(&entries)?;
-    println!("Selected instance: {selected}");
+    if changed {
+        config.save()?;
+    }
 
-    let config = AwsListConfig::new(profile, selected.instance_id.clone());
-    config.save()?;
-    Ok(config)
+    Ok((config, client))
 }
 
 #[tokio::main]
@@ -37,26 +50,21 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let config = if cli.configure {
-        run_configure().await?
+    let loaded = if cli.configure {
+        AwsListConfig::default()
     } else {
-        match AwsListConfig::load()? {
-            Some(config) => config,
-            None => {
-                println!("No config found, let's set one up.");
-                run_configure().await?
-            }
-        }
+        AwsListConfig::load()?
     };
 
-    let client = Ec2Client::new(&config.profile).await;
+    let (config, client) = resolve_config(loaded).await?;
+    let instance_id = config.instance_id.expect("instance_id was just resolved");
 
-    match client.instance_state(&config.instance_id).await? {
+    match client.instance_state(&instance_id).await? {
         Some(state) if state == "running" => {
-            println!("Instance {} is already running.", config.instance_id);
+            println!("Instance {instance_id} is already running.");
         }
         _ => {
-            client.start_and_wait(&config.instance_id).await?;
+            client.start_and_wait(&instance_id).await?;
         }
     }
 
