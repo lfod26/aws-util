@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const CONFIG_NAME: &str = "aws_list_conf.json";
+const CONFIG_NAME: &str = "aws_util_conf.json";
 
 /// Config file contents. Fields are optional so a partially-filled config
 /// (e.g. one missing `instance_id`, or from an older version of this tool)

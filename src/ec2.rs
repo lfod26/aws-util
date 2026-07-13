@@ -54,6 +54,31 @@ struct Tag {
     value: String,
 }
 
+// Shapes matching `aws ssm send-command --output json` /
+// `aws ssm get-command-invocation --output json`, only capturing the
+// fields this tool actually needs.
+#[derive(Deserialize)]
+struct SendCommandOutput {
+    #[serde(rename = "Command")]
+    command: SendCommandCommand,
+}
+
+#[derive(Deserialize)]
+struct SendCommandCommand {
+    #[serde(rename = "CommandId")]
+    command_id: String,
+}
+
+#[derive(Deserialize)]
+struct CommandInvocation {
+    #[serde(rename = "Status")]
+    status: String,
+    #[serde(rename = "StandardOutputContent", default)]
+    standard_output_content: String,
+    #[serde(rename = "StandardErrorContent", default)]
+    standard_error_content: String,
+}
+
 /// Thin wrapper around the `aws` CLI, scoped to the EC2 operations this
 /// tool needs (list, start/wait, stop/wait). Shells out to the CLI rather
 /// than using the AWS SDK so it can rely on whatever `aws` install/config
@@ -173,8 +198,13 @@ impl Ec2Client {
         }
 
         println!("Waiting for instance {instance_id} to reach 'running'...");
-        let wait_output =
-            self.run_aws(&["ec2", "wait", "instance-running", "--instance-ids", instance_id])?;
+        let wait_output = self.run_aws(&[
+            "ec2",
+            "wait",
+            "instance-running",
+            "--instance-ids",
+            instance_id,
+        ])?;
         if !wait_output.status.success() {
             bail!(
                 "failed while waiting for instance {instance_id} to become running: {}",
@@ -205,8 +235,13 @@ impl Ec2Client {
         }
 
         println!("Waiting for instance {instance_id} to reach 'stopped'...");
-        let wait_output =
-            self.run_aws(&["ec2", "wait", "instance-stopped", "--instance-ids", instance_id])?;
+        let wait_output = self.run_aws(&[
+            "ec2",
+            "wait",
+            "instance-stopped",
+            "--instance-ids",
+            instance_id,
+        ])?;
         if !wait_output.status.success() {
             bail!(
                 "failed while waiting for instance {instance_id} to become stopped: {}",
@@ -215,6 +250,86 @@ impl Ec2Client {
         }
 
         println!("Instance {instance_id} is now stopped.");
+        Ok(())
+    }
+
+    /// Schedules an OS-level shutdown inside the instance in `minutes`
+    /// minutes from now (`target_time` is only used for the printed
+    /// message), via SSM Run Command (`AWS-RunShellScript`). First checks
+    /// (in the same remote script) whether a shutdown is already pending
+    /// via `shutdown --show`'s exit code (0 = a shutdown is scheduled,
+    /// 1 = none is), and leaves it alone if so instead of scheduling a
+    /// second one.
+    ///
+    /// Requires the instance to have the SSM Agent running and an
+    /// instance profile with SSM permissions - if not, the send-command
+    /// call itself will fail with a clear error from the CLI.
+    pub fn schedule_shutdown(
+        &self,
+        instance_id: &str,
+        minutes: i64,
+        target_time: &str,
+    ) -> Result<()> {
+        let script = format!(
+            "if shutdown --show >/dev/null 2>&1; then \
+                echo 'Shutdown already scheduled, leaving it as-is:'; \
+                shutdown --show 2>&1; \
+             else \
+                shutdown -h +{minutes} 'Auto-shutdown scheduled by aws-util' && \
+                echo 'Scheduled shutdown at {target_time} (in {minutes} minute(s)).'; \
+             fi"
+        );
+
+        println!("Sending SSM command to schedule shutdown on {instance_id}...");
+        let params = format!("commands=[\"{script}\"]");
+        let send_output: SendCommandOutput = self.run_aws_json(&[
+            "ssm",
+            "send-command",
+            "--instance-ids",
+            instance_id,
+            "--document-name",
+            "AWS-RunShellScript",
+            "--parameters",
+            &params,
+        ])?;
+        let command_id = send_output.command.command_id;
+
+        // Use the CLI's built-in waiter (handles the "invocation not
+        // registered yet" race and polling internally) instead of a
+        // manual poll loop. It errors out if the command reaches a
+        // failure/cancellation status.
+        let wait_output = self.run_aws(&[
+            "ssm",
+            "wait",
+            "command-executed",
+            "--command-id",
+            &command_id,
+            "--instance-id",
+            instance_id,
+        ])?;
+
+        let invocation: CommandInvocation = self.run_aws_json(&[
+            "ssm",
+            "get-command-invocation",
+            "--command-id",
+            &command_id,
+            "--instance-id",
+            instance_id,
+        ])?;
+
+        if !invocation.standard_output_content.trim().is_empty() {
+            println!("{}", invocation.standard_output_content.trim());
+        }
+
+        if !wait_output.status.success() {
+            bail!(
+                "SSM command to schedule shutdown on {instance_id} did not succeed \
+                 (status: {}): {}",
+                invocation.status,
+                invocation.standard_error_content.trim()
+            );
+        }
+
         Ok(())
     }
 }

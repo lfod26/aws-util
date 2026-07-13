@@ -1,5 +1,5 @@
 [package]
-name = "aws-list"
+name = "aws-util"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,6 +10,7 @@ dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 ctrlc = "3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+chrono = "0.4"
 
 [profile.release]
 opt-level = "z"

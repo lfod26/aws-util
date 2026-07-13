@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod ec2;
 mod interactive;
+mod schedule;
 mod signal;
 
 use anyhow::{Result, bail};
@@ -45,11 +46,21 @@ fn main() -> Result<()> {
 
     let config = AwsListConfig::load()?;
     let (Some(profile), Some(instance_id)) = (config.profile, config.instance_id) else {
-        println!("No configuration found. Run `aws-list --configure` first.");
+        println!("Partial or no config found. Run `aws-util --configure` first.");
         return Ok(());
     };
 
     let client = Ec2Client::new(&profile);
+
+    if let Some(time_str) = cli.schedule_shutdown {
+        let (minutes, target_time) = schedule::minutes_until_next(&time_str)?;
+        client.schedule_shutdown(
+            &instance_id,
+            minutes,
+            &target_time.format("%H:%M").to_string(),
+        )?;
+        return Ok(());
+    }
 
     if cli.stop {
         match client.instance_state(&instance_id)? {
