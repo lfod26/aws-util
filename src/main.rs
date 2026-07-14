@@ -9,15 +9,26 @@ use anyhow::{Result, bail};
 use clap::Parser;
 
 use cli::Cli;
-use config::AwsListConfig;
+use config::{AwsUtilConfig, ProfileGroup};
 use ec2::Ec2Client;
 
-/// Runs the interactive configuration procedure, always prompting for both
-/// the profile and the instance (even if a config already exists), then
-/// saves it. Does not start or stop the instance.
+/// Runs the interactive configuration procedure. If one or more groups
+/// are already configured, first lets the user choose whether to edit one
+/// of them (replacing it in place) or add a new one; if none are
+/// configured yet, goes straight to adding the first one. Does not start
+/// or stop any instance.
 fn run_configure() -> Result<()> {
-    let profile = interactive::prompt_profile()?;
-    let client = Ec2Client::new(&profile);
+    let mut config = AwsUtilConfig::load()?;
+
+    let edit_index = if config.groups.is_empty() {
+        None
+    } else {
+        interactive::select_group_to_edit(&config.groups)?
+    };
+
+    let profiles = ec2::list_profiles()?;
+    let profile = interactive::select_profile(&profiles)?;
+    let client = Ec2Client::new(profile);
 
     let entries = client.list_instances()?;
     if entries.is_empty() {
@@ -26,12 +37,17 @@ fn run_configure() -> Result<()> {
     let selected = interactive::select_instance(&entries)?;
     println!("Selected instance: {selected}");
 
-    let config = AwsListConfig {
-        profile: Some(profile),
-        instance_id: Some(selected.instance_id.clone()),
+    let group = ProfileGroup {
+        profile: profile.clone(),
+        instance_id: selected.instance_id.clone(),
     };
-    config.save()?;
 
+    match edit_index {
+        Some(i) => config.groups[i] = group,
+        None => config.groups.push(group),
+    }
+
+    config.save()?;
     Ok(())
 }
 
@@ -44,42 +60,46 @@ fn main() -> Result<()> {
         return run_configure();
     }
 
-    let config = AwsListConfig::load()?;
-    let (Some(profile), Some(instance_id)) = (config.profile, config.instance_id) else {
-        println!("Partial or no config found. Run `aws-util --configure` first.");
+    let config = AwsUtilConfig::load()?;
+    if config.groups.is_empty() {
+        println!("No configuration found. Run `aws-util --configure` first.");
         return Ok(());
+    }
+
+    let group = if config.groups.len() == 1 {
+        &config.groups[0]
+    } else {
+        interactive::select_group(&config.groups)?
     };
 
-    let client = Ec2Client::new(&profile);
+    let client = Ec2Client::new(&group.profile);
+    let instance = client.instance(&group.instance_id);
+    let instance_id = &group.instance_id;
 
     if let Some(time_str) = cli.schedule_shutdown {
         let (minutes, target_time) = schedule::minutes_until_next(&time_str)?;
-        client.schedule_shutdown(
-            &instance_id,
-            minutes,
-            &target_time.format("%H:%M").to_string(),
-        )?;
+        instance.schedule_shutdown(minutes, &target_time.format("%H:%M").to_string())?;
         return Ok(());
     }
 
     if cli.stop {
-        match client.instance_state(&instance_id)? {
+        match instance.state()? {
             Some(state) if state == "stopped" => {
                 println!("Instance {instance_id} is already stopped.");
             }
             _ => {
-                client.stop_and_wait(&instance_id)?;
+                instance.stop_and_wait()?;
             }
         }
         return Ok(());
     }
 
-    match client.instance_state(&instance_id)? {
+    match instance.state()? {
         Some(state) if state == "running" => {
             println!("Instance {instance_id} is already running.");
         }
         _ => {
-            client.start_and_wait(&instance_id)?;
+            instance.start_and_wait()?;
         }
     }
 

@@ -5,21 +5,42 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_NAME: &str = "aws_util_conf.json";
 
-/// Config file contents. Fields are optional so a partially-filled config
-/// (e.g. one missing `instance_id`, or from an older version of this tool)
-/// doesn't need to be discarded entirely — only the missing pieces need to
-/// be prompted for again.
-#[derive(Serialize, Deserialize, Default)]
-pub struct AwsListConfig {
-    pub profile: Option<String>,
-    pub instance_id: Option<String>,
+/// A single profile + instance pairing that `--start`/`--stop`/
+/// `--schedule-shutdown` can act on.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ProfileGroup {
+    pub profile: String,
+    pub instance_id: String,
 }
 
-impl AwsListConfig {
+impl std::fmt::Display for ProfileGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.profile, self.instance_id)
+    }
+}
+
+/// Config file contents: a list of profile+instance groups. Supports
+/// multiple groups so this tool can manage more than one instance (each
+/// possibly under a different AWS CLI profile).
+#[derive(Serialize, Deserialize, Default)]
+pub struct AwsUtilConfig {
+    #[serde(default)]
+    pub groups: Vec<ProfileGroup>,
+
+    // Older config files (before multi-profile support) stored a single
+    // profile/instance_id pair at the top level instead of in `groups`.
+    // These fields are only read during `load()` to migrate such files
+    // into a single-entry `groups` list, and are never written back out.
+    #[serde(default, skip_serializing)]
+    profile: Option<String>,
+    #[serde(default, skip_serializing)]
+    instance_id: Option<String>,
+}
+
+impl AwsUtilConfig {
     /// Resolves the path to the config file next to the running executable
     /// (or the current directory in debug builds, for convenience during
-    /// `cargo run`), mirroring the convention used by the sibling `aws-util`
-    /// tool.
+    /// `cargo run`).
     fn resolve_path() -> std::io::Result<PathBuf> {
         #[cfg(debug_assertions)]
         let mut base = std::env::current_dir()?;
@@ -35,11 +56,12 @@ impl AwsListConfig {
     }
 
     /// Loads the config file next to the executable. Returns a default
-    /// (empty) config when there is no config file yet. Since all fields
-    /// are optional, a config file that's just missing a field parses
-    /// fine — only genuinely malformed JSON hits the error path, in which
-    /// case the invalid file is backed up (so it isn't silently lost) and
-    /// a warning is printed, falling back to an empty config.
+    /// (empty) config when there is no config file yet. If genuinely
+    /// malformed JSON is found, the invalid file is backed up (so it
+    /// isn't silently lost), a warning is printed, and an empty config is
+    /// returned. Old-style single profile/instance_id configs (from
+    /// before multi-profile support) are migrated into a one-entry
+    /// `groups` list.
     pub fn load() -> Result<Self> {
         let path = Self::resolve_path().context("failed to resolve config file path")?;
 
@@ -50,8 +72,19 @@ impl AwsListConfig {
         let file = std::fs::File::open(&path)
             .with_context(|| format!("failed to open config file at {}", path.display()))?;
 
-        match serde_json::from_reader(file) {
-            Ok(config) => Ok(config),
+        match serde_json::from_reader::<_, Self>(file) {
+            Ok(mut config) => {
+                if config.groups.is_empty()
+                    && let (Some(profile), Some(instance_id)) =
+                        (config.profile.take(), config.instance_id.take())
+                {
+                    config.groups.push(ProfileGroup {
+                        profile,
+                        instance_id,
+                    });
+                }
+                Ok(config)
+            }
             Err(err) => {
                 let backup_path = path.with_extension("json.bak");
                 match std::fs::rename(&path, &backup_path) {

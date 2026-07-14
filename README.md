@@ -1,7 +1,7 @@
 # aws-util
 
-A small Rust CLI that starts or stops a single, pre-configured AWS EC2
-instance and waits for it to reach the desired state — a typed,
+A small Rust CLI that starts or stops one or more pre-configured AWS EC2
+instances and waits for them to reach the desired state — a typed,
 interactive replacement for a handful of `aws ec2` commands you'd
 otherwise run by hand:
 
@@ -13,8 +13,8 @@ aws ec2 start-instances --instance-ids %INSTANCE_ID% --profile %PROFILE% --no-cl
 aws ec2 wait instance-running --instance-ids %INSTANCE_ID% --profile %PROFILE%
 ```
 
-`aws-util` remembers your profile and instance ID in a small config file
-next to the executable, so day-to-day usage is just:
+`aws-util` remembers one or more profile+instance pairs in a small config
+file next to the executable, so day-to-day usage is just:
 
 ```sh
 aws-util
@@ -36,9 +36,9 @@ This means:
 
 - The [AWS CLI](https://aws.amazon.com/cli/) (v2 recommended) installed
   and available on `PATH`.
-- An AWS CLI profile already configured (`aws configure --profile
-  <name>`, or SSO) with permission to describe/start/stop the target
-  EC2 instance.
+- One or more AWS CLI profiles already configured (`aws configure
+  --profile <name>`, or SSO) with permission to describe/start/stop the
+  target EC2 instance(s).
 
 ## Installation / build
 
@@ -61,18 +61,32 @@ aws-util [--configure] [--start | --stop | --schedule-shutdown [HH:MM]]
 | *(none)*      | Same as `--start`. This is the default.                                                                     |
 | `--start`     | Explicit alias for the default: starts the configured instance and waits for `running` (no-op if already running). |
 | `--stop`      | Stops the configured instance and waits for `stopped` (no-op if already stopped). Conflicts with `--start`/`--schedule-shutdown`. |
-| `--configure` | Runs the interactive setup: type in a profile name, fuzzy-search/select an instance, and save both to the config file. Only configures — does not start or stop anything. Conflicts with `--stop`/`--schedule-shutdown`. |
+| `--configure` | Runs the interactive setup: add a new profile/instance pair, or pick an existing one to replace, then fuzzy-search/select an AWS CLI profile and an instance. Only configures — does not start or stop anything. Conflicts with `--stop`/`--schedule-shutdown`. |
 | `--schedule-shutdown [HH:MM]` | Tells the **instance itself** to shut down at the given 24-hour local clock time (default `18:30` if omitted; rolls over to tomorrow if that time already passed today), via an SSM Run Command. First checks whether a shutdown is already pending and leaves it alone if so, instead of scheduling a duplicate. Conflicts with `--configure`/`--start`/`--stop`. See [Auto-shutdown](#auto-shutdown-via-ssm) below. |
 
-If no config file exists yet (or it's missing required fields), running
-`aws-util`, `aws-util --start`, `aws-util --stop`, or
-`aws-util --schedule-shutdown` will print:
+If no profile/instance pair is configured yet, running `aws-util`,
+`aws-util --start`, `aws-util --stop`, or `aws-util --schedule-shutdown`
+will print:
 
 ```
-Partial or no config found. Run `aws-util --configure` first.
+No configuration found. Run `aws-util --configure` first.
 ```
 
 and exit without prompting — run `aws-util --configure` to set it up.
+
+### Multiple profiles/instances
+
+`aws-util` can manage more than one EC2 instance (each under its own AWS
+CLI profile, or even multiple instances under the same profile):
+
+- If exactly **one** profile/instance pair is configured, it's used
+  automatically — no prompt.
+- If **more than one** is configured, `--start`/`--stop`/
+  `--schedule-shutdown` show a fuzzy-search prompt to pick which one to
+  act on for that invocation.
+- `--configure` first lets you pick an existing pair to replace, or
+  choose "+ Add new profile/instance" to add another one alongside the
+  existing ones.
 
 ### First-time setup
 
@@ -80,14 +94,16 @@ and exit without prompting — run `aws-util --configure` to set it up.
 aws-util --configure
 ```
 
-You'll be asked to:
-1. Type in an AWS profile name (must already exist in your AWS CLI
-   config).
+If any profile/instance pairs are already configured, you'll first be
+asked to pick one to replace, or "+ Add new profile/instance". Either
+way, you'll then be asked to:
+1. Fuzzy-search and select an AWS CLI profile (from `aws configure
+   list-profiles` — fails with a clear error if none are configured yet).
 2. Fuzzy-search and select an EC2 instance from the list of instances
    visible to that profile.
 
-Both are saved to the config file. Re-run `--configure` any time to
-change either value.
+The result is saved to the config file. Re-run `--configure` any time to
+add another pair or change an existing one.
 
 ## Configuration
 
@@ -100,19 +116,23 @@ change either value.
 
 ```json
 {
-  "profile": "my-profile",
-  "instance_id": "i-0123456789abcdef0"
+  "groups": [
+    { "profile": "my-profile", "instance_id": "i-0123456789abcdef0" },
+    { "profile": "other-profile", "instance_id": "i-0fedcba9876543210" }
+  ]
 }
 ```
 
-Both fields are optional in the file itself — if the file is missing a
-field (e.g. from an older version of this tool, or partial manual
-editing), `aws-util --configure` will only need to fill in what's
-missing on the next reconfigure; a genuinely corrupt/unparseable file is
-backed up to `aws_util_conf.json.bak` with a warning instead of crashing.
+A genuinely corrupt/unparseable file is backed up to
+`aws_util_conf.json.bak` with a warning instead of crashing, and treated
+as if no config existed. Config files from older versions of this tool
+(a single top-level `profile`/`instance_id` pair, no `groups` array) are
+transparently read as a single-entry `groups` list; they're only
+rewritten to the new format the next time `--configure` saves.
 
 The config file is git-ignored (see `.gitignore`) since it's
 machine/user-specific.
+
 
 ## Auto-shutdown via SSM
 

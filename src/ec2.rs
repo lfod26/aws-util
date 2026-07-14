@@ -19,38 +19,38 @@ impl std::fmt::Display for InstanceEntry {
 // Shapes matching `aws ec2 describe-instances --output json`, only
 // capturing the fields this tool actually needs.
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct DescribeInstancesOutput {
-    #[serde(rename = "Reservations")]
     reservations: Vec<Reservation>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct Reservation {
-    #[serde(rename = "Instances")]
-    instances: Vec<Instance>,
+    instances: Vec<InstanceJson>,
 }
 
+// Named `InstanceJson` (rather than `Instance`) to avoid colliding with
+// the public `Instance` handle type below, which represents something
+// different (a single instance scoped to a client, for start/stop/etc.).
 #[derive(Deserialize)]
-struct Instance {
-    #[serde(rename = "InstanceId")]
+#[serde(rename_all = "PascalCase")]
+struct InstanceJson {
     instance_id: String,
-    #[serde(rename = "State")]
     state: InstanceState,
-    #[serde(rename = "Tags", default)]
-    tags: Vec<Tag>,
+    tags: Option<Vec<Tag>>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct InstanceState {
-    #[serde(rename = "Name")]
     name: String,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct Tag {
-    #[serde(rename = "Key")]
     key: String,
-    #[serde(rename = "Value")]
     value: String,
 }
 
@@ -58,25 +58,65 @@ struct Tag {
 // `aws ssm get-command-invocation --output json`, only capturing the
 // fields this tool actually needs.
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct SendCommandOutput {
-    #[serde(rename = "Command")]
     command: SendCommandCommand,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct SendCommandCommand {
-    #[serde(rename = "CommandId")]
     command_id: String,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct CommandInvocation {
-    #[serde(rename = "Status")]
     status: String,
-    #[serde(rename = "StandardOutputContent", default)]
-    standard_output_content: String,
-    #[serde(rename = "StandardErrorContent", default)]
-    standard_error_content: String,
+    standard_output_content: Option<String>,
+    standard_error_content: Option<String>,
+}
+
+/// Lists the AWS CLI profile names configured on this machine, via
+/// `aws configure list-profiles`. This isn't scoped to `Ec2Client` since
+/// it doesn't take a `--profile` argument itself (it's how a profile gets
+/// picked in the first place).
+///
+/// Fails with a helpful message if the `aws` executable can't be
+/// found/launched at all, if the command itself fails, or if it succeeds
+/// but returns no profiles (meaning the user hasn't run `aws configure`
+/// yet).
+pub fn list_profiles() -> Result<Vec<String>> {
+    let output = Command::new("aws")
+        .args(["configure", "list-profiles"])
+        .output()
+        .context(
+            "failed to run the `aws` CLI - is it installed and on PATH? \
+             (see https://aws.amazon.com/cli/)",
+        )?;
+
+    if !output.status.success() {
+        bail!(
+            "aws configure list-profiles failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let profiles: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect();
+
+    if profiles.is_empty() {
+        bail!(
+            "No AWS CLI profiles found. Run `aws configure` (or `aws configure sso`) \
+             to set one up first."
+        );
+    }
+
+    Ok(profiles)
 }
 
 /// Thin wrapper around the `aws` CLI, scoped to the EC2 operations this
@@ -147,6 +187,8 @@ impl Ec2Client {
             .map(|i| {
                 let name = i
                     .tags
+                    .as_deref()
+                    .unwrap_or_default()
                     .iter()
                     .find(|t| t.key == "Name")
                     .map(|t| t.value.clone())
@@ -169,21 +211,44 @@ impl Ec2Client {
         self.describe_instances(&[])
     }
 
-    /// Fetches the current state (e.g. "running", "stopped") of a single
+    /// Returns a handle scoped to a single instance, so operations on it
+    /// (state checks, start/stop, schedule-shutdown) don't need to keep
+    /// passing the instance ID around.
+    pub fn instance(&self, instance_id: &str) -> Instance<'_> {
+        Instance {
+            client: self,
+            instance_id: instance_id.to_string(),
+        }
+    }
+}
+
+/// A single EC2 instance, scoped to a profile via the `Ec2Client` that
+/// created it. Owns the instance ID so callers don't need to pass it to
+/// every method.
+pub struct Instance<'a> {
+    client: &'a Ec2Client,
+    instance_id: String,
+}
+
+impl Instance<'_> {
+    /// Fetches the current state (e.g. "running", "stopped") of this
     /// instance, or `None` if it doesn't exist.
-    pub fn instance_state(&self, instance_id: &str) -> Result<Option<String>> {
+    pub fn state(&self) -> Result<Option<String>> {
+        let instance_id = &self.instance_id;
         let entries = self
+            .client
             .describe_instances(&["--instance-ids", instance_id])
             .with_context(|| format!("failed to describe instance {instance_id}"))?;
 
         Ok(entries.into_iter().next().map(|e| e.state))
     }
 
-    /// Starts the given instance and waits until it reaches the `running`
+    /// Starts this instance and waits until it reaches the `running`
     /// state.
-    pub fn start_and_wait(&self, instance_id: &str) -> Result<()> {
+    pub fn start_and_wait(&self) -> Result<()> {
+        let instance_id = &self.instance_id;
         println!("Starting instance {instance_id}...");
-        let output = self.run_aws(&[
+        let output = self.client.run_aws(&[
             "ec2",
             "start-instances",
             "--instance-ids",
@@ -198,7 +263,7 @@ impl Ec2Client {
         }
 
         println!("Waiting for instance {instance_id} to reach 'running'...");
-        let wait_output = self.run_aws(&[
+        let wait_output = self.client.run_aws(&[
             "ec2",
             "wait",
             "instance-running",
@@ -216,11 +281,12 @@ impl Ec2Client {
         Ok(())
     }
 
-    /// Stops the given instance and waits until it reaches the `stopped`
+    /// Stops this instance and waits until it reaches the `stopped`
     /// state.
-    pub fn stop_and_wait(&self, instance_id: &str) -> Result<()> {
+    pub fn stop_and_wait(&self) -> Result<()> {
+        let instance_id = &self.instance_id;
         println!("Stopping instance {instance_id}...");
-        let output = self.run_aws(&[
+        let output = self.client.run_aws(&[
             "ec2",
             "stop-instances",
             "--instance-ids",
@@ -235,7 +301,7 @@ impl Ec2Client {
         }
 
         println!("Waiting for instance {instance_id} to reach 'stopped'...");
-        let wait_output = self.run_aws(&[
+        let wait_output = self.client.run_aws(&[
             "ec2",
             "wait",
             "instance-stopped",
@@ -253,7 +319,7 @@ impl Ec2Client {
         Ok(())
     }
 
-    /// Schedules an OS-level shutdown inside the instance in `minutes`
+    /// Schedules an OS-level shutdown inside this instance in `minutes`
     /// minutes from now (`target_time` is only used for the printed
     /// message), via SSM Run Command (`AWS-RunShellScript`). First checks
     /// (in the same remote script) whether a shutdown is already pending
@@ -264,12 +330,8 @@ impl Ec2Client {
     /// Requires the instance to have the SSM Agent running and an
     /// instance profile with SSM permissions - if not, the send-command
     /// call itself will fail with a clear error from the CLI.
-    pub fn schedule_shutdown(
-        &self,
-        instance_id: &str,
-        minutes: i64,
-        target_time: &str,
-    ) -> Result<()> {
+    pub fn schedule_shutdown(&self, minutes: i64, target_time: &str) -> Result<()> {
+        let instance_id = &self.instance_id;
         let script = format!(
             "if shutdown --show >/dev/null 2>&1; then \
                 echo 'Shutdown already scheduled, leaving it as-is:'; \
@@ -282,7 +344,7 @@ impl Ec2Client {
 
         println!("Sending SSM command to schedule shutdown on {instance_id}...");
         let params = format!("commands=[\"{script}\"]");
-        let send_output: SendCommandOutput = self.run_aws_json(&[
+        let send_output: SendCommandOutput = self.client.run_aws_json(&[
             "ssm",
             "send-command",
             "--instance-ids",
@@ -298,7 +360,7 @@ impl Ec2Client {
         // registered yet" race and polling internally) instead of a
         // manual poll loop. It errors out if the command reaches a
         // failure/cancellation status.
-        let wait_output = self.run_aws(&[
+        let wait_output = self.client.run_aws(&[
             "ssm",
             "wait",
             "command-executed",
@@ -308,7 +370,7 @@ impl Ec2Client {
             instance_id,
         ])?;
 
-        let invocation: CommandInvocation = self.run_aws_json(&[
+        let invocation: CommandInvocation = self.client.run_aws_json(&[
             "ssm",
             "get-command-invocation",
             "--command-id",
@@ -317,8 +379,11 @@ impl Ec2Client {
             instance_id,
         ])?;
 
-        if !invocation.standard_output_content.trim().is_empty() {
-            println!("{}", invocation.standard_output_content.trim());
+        if let Some(stdout) = invocation.standard_output_content.as_deref() {
+            let stdout = stdout.trim();
+            if !stdout.is_empty() {
+                println!("{stdout}");
+            }
         }
 
         if !wait_output.status.success() {
@@ -326,7 +391,11 @@ impl Ec2Client {
                 "SSM command to schedule shutdown on {instance_id} did not succeed \
                  (status: {}): {}",
                 invocation.status,
-                invocation.standard_error_content.trim()
+                invocation
+                    .standard_error_content
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
             );
         }
 

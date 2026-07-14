@@ -1,30 +1,32 @@
 use clap::Parser;
 
-/// Starts the configured EC2 instance (waiting for it to reach the
-/// `running` state), reading the profile and instance id from a config
-/// file next to the executable. If no config exists yet, prints a message
-/// telling the user to run `--configure` first (no interactive prompting
-/// happens outside of `--configure`).
+/// Starts a configured EC2 instance (waiting for it to reach the
+/// `running` state), reading profile/instance groups from a config file
+/// next to the executable. If exactly one group is configured, it's used
+/// automatically; if more than one is configured, prompts you to pick
+/// which one to act on. If no config exists yet, prints a message telling
+/// you to run `--configure` first (no interactive prompting happens
+/// outside of `--configure`).
 #[derive(Parser)]
 #[command(
     name = "aws-util",
     about = "Start or stop a configured EC2 instance via the `aws` CLI"
 )]
 pub struct Cli {
-    /// Run the interactive configuration procedure (choose profile and
-    /// instance), always prompting for both even if a config already
-    /// exists, to change it. Only configures — does not start or stop the
-    /// instance.
+    /// Run the interactive configuration procedure to add or edit a
+    /// profile/instance group. If any groups are already configured,
+    /// lets you pick one to replace or add a new one. Only configures —
+    /// does not start or stop any instance.
     #[arg(long, conflicts_with_all = ["stop", "schedule_shutdown"])]
     pub configure: bool,
 
-    /// Start the configured EC2 instance (waiting for it to reach the
+    /// Start a configured EC2 instance (waiting for it to reach the
     /// `running` state). This is the default behavior when no flag is
     /// passed; the flag exists to make the action explicit.
     #[arg(long, conflicts_with_all = ["stop", "schedule_shutdown"])]
     pub start: bool,
 
-    /// Stop the configured EC2 instance (waiting for it to reach the
+    /// Stop a configured EC2 instance (waiting for it to reach the
     /// `stopped` state) instead of starting it.
     #[arg(long, conflicts_with_all = ["start", "schedule_shutdown"])]
     pub stop: bool,
@@ -46,3 +48,4 @@ pub struct Cli {
     )]
     pub schedule_shutdown: Option<String>,
 }
+
