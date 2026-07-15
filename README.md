@@ -115,20 +115,15 @@ add another pair or change an existing one.
   convenience during development.
 
 ```json
-{
-  "groups": [
-    { "profile": "my-profile", "instance_id": "i-0123456789abcdef0" },
-    { "profile": "other-profile", "instance_id": "i-0fedcba9876543210" }
-  ]
-}
+[
+  { "profile": "my-profile", "instance_id": "i-0123456789abcdef0" },
+  { "profile": "other-profile", "instance_id": "i-0fedcba9876543210" }
+]
 ```
 
 A genuinely corrupt/unparseable file is backed up to
 `aws_util_conf.json.bak` with a warning instead of crashing, and treated
-as if no config existed. Config files from older versions of this tool
-(a single top-level `profile`/`instance_id` pair, no `groups` array) are
-transparently read as a single-entry `groups` list; they're only
-rewritten to the new format the next time `--configure` saves.
+as if no config existed.
 
 The config file is git-ignored (see `.gitignore`) since it's
 machine/user-specific.

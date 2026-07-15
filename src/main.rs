@@ -1,6 +1,6 @@
 mod cli;
 mod config;
-mod ec2;
+mod aws;
 mod interactive;
 mod schedule;
 mod signal;
@@ -10,7 +10,7 @@ use clap::Parser;
 
 use cli::Cli;
 use config::{AwsUtilConfig, ProfileGroup};
-use ec2::Ec2Client;
+use aws::AwsClient;
 
 /// Runs the interactive configuration procedure. If one or more groups
 /// are already configured, first lets the user choose whether to edit one
@@ -26,9 +26,9 @@ fn run_configure() -> Result<()> {
         interactive::select_group_to_edit(&config.groups)?
     };
 
-    let profiles = ec2::list_profiles()?;
+    let profiles = aws::list_profiles()?;
     let profile = interactive::select_profile(&profiles)?;
-    let client = Ec2Client::new(profile);
+    let client = AwsClient::new(profile);
 
     let entries = client.list_instances()?;
     if entries.is_empty() {
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
         interactive::select_group(&config.groups)?
     };
 
-    let client = Ec2Client::new(&group.profile);
+    let client = AwsClient::new(&group.profile);
     let instance = client.instance(&group.instance_id);
     let instance_id = &group.instance_id;
 

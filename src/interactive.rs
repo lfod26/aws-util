@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use dialoguer::{FuzzySelect, theme::ColorfulTheme};
 
 use crate::config::ProfileGroup;
-use crate::ec2::InstanceEntry;
+use crate::aws::InstanceEntry;
 
 /// Prompts the user to fuzzy-search and pick one AWS CLI profile from the
 /// given list (as returned by `aws configure list-profiles`).

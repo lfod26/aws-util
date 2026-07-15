@@ -19,22 +19,12 @@ impl std::fmt::Display for ProfileGroup {
     }
 }
 
-/// Config file contents: a list of profile+instance groups. Supports
-/// multiple groups so this tool can manage more than one instance (each
-/// possibly under a different AWS CLI profile).
-#[derive(Serialize, Deserialize, Default)]
+/// Config file contents: a top-level JSON array of profile+instance
+/// groups. Supports multiple groups so this tool can manage more than
+/// one instance (each possibly under a different AWS CLI profile).
+#[derive(Default)]
 pub struct AwsUtilConfig {
-    #[serde(default)]
     pub groups: Vec<ProfileGroup>,
-
-    // Older config files (before multi-profile support) stored a single
-    // profile/instance_id pair at the top level instead of in `groups`.
-    // These fields are only read during `load()` to migrate such files
-    // into a single-entry `groups` list, and are never written back out.
-    #[serde(default, skip_serializing)]
-    profile: Option<String>,
-    #[serde(default, skip_serializing)]
-    instance_id: Option<String>,
 }
 
 impl AwsUtilConfig {
@@ -59,9 +49,7 @@ impl AwsUtilConfig {
     /// (empty) config when there is no config file yet. If genuinely
     /// malformed JSON is found, the invalid file is backed up (so it
     /// isn't silently lost), a warning is printed, and an empty config is
-    /// returned. Old-style single profile/instance_id configs (from
-    /// before multi-profile support) are migrated into a one-entry
-    /// `groups` list.
+    /// returned.
     pub fn load() -> Result<Self> {
         let path = Self::resolve_path().context("failed to resolve config file path")?;
 
@@ -69,22 +57,11 @@ impl AwsUtilConfig {
             return Ok(Self::default());
         }
 
-        let file = std::fs::File::open(&path)
+        let contents = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to open config file at {}", path.display()))?;
 
-        match serde_json::from_reader::<_, Self>(file) {
-            Ok(mut config) => {
-                if config.groups.is_empty()
-                    && let (Some(profile), Some(instance_id)) =
-                        (config.profile.take(), config.instance_id.take())
-                {
-                    config.groups.push(ProfileGroup {
-                        profile,
-                        instance_id,
-                    });
-                }
-                Ok(config)
-            }
+        match serde_json::from_str::<Vec<ProfileGroup>>(&contents) {
+            Ok(groups) => Ok(Self { groups }),
             Err(err) => {
                 let backup_path = path.with_extension("json.bak");
                 match std::fs::rename(&path, &backup_path) {
@@ -110,7 +87,7 @@ impl AwsUtilConfig {
         let path = Self::resolve_path().context("failed to resolve config file path")?;
         let file = std::fs::File::create(&path)
             .with_context(|| format!("failed to create config file at {}", path.display()))?;
-        serde_json::to_writer_pretty(file, self)
+        serde_json::to_writer_pretty(file, &self.groups)
             .with_context(|| format!("failed to write config file at {}", path.display()))?;
 
         println!("Saved config to {}", path.display());
