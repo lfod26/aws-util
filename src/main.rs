@@ -4,9 +4,11 @@ mod aws;
 mod interactive;
 mod schedule;
 mod signal;
+mod spinner;
 
 use anyhow::{Result, bail};
 use clap::Parser;
+use console::style;
 
 use cli::Cli;
 use config::{AwsUtilConfig, ProfileGroup};
@@ -30,7 +32,7 @@ fn run_configure() -> Result<()> {
     let profile = interactive::select_profile(&profiles)?;
     let client = AwsClient::new(profile);
 
-    let entries = client.list_instances()?;
+    let entries = spinner::with_spinner("Fetching instances...", || client.list_instances())?;
     if entries.is_empty() {
         bail!("No instances found");
     }
@@ -85,7 +87,10 @@ fn main() -> Result<()> {
     if cli.stop {
         match instance.state()? {
             Some(state) if state == "stopped" => {
-                println!("Instance {instance_id} is already stopped.");
+                println!(
+                    "Instance {instance_id} is already {}.",
+                    style("stopped").red()
+                );
             }
             _ => {
                 instance.stop_and_wait()?;
@@ -96,7 +101,10 @@ fn main() -> Result<()> {
 
     match instance.state()? {
         Some(state) if state == "running" => {
-            println!("Instance {instance_id} is already running.");
+            println!(
+                "Instance {instance_id} is already {}.",
+                style("running").green()
+            );
         }
         _ => {
             instance.start_and_wait()?;

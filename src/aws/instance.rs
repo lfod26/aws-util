@@ -2,10 +2,12 @@
 //! created it.
 
 use anyhow::{Context, Result, bail};
+use console::style;
 use serde::Deserialize;
 
 use super::aws_command::AwsCommand;
 use super::client::AwsClient;
+use crate::spinner::with_spinner;
 
 // Shapes matching `aws ssm send-command --output json` /
 // `aws ssm get-command-invocation --output json`, only capturing the
@@ -39,6 +41,11 @@ pub struct InstanceEntry {
 
 impl std::fmt::Display for InstanceEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Deliberately plain (no color codes): this `Display` impl also
+        // backs dialoguer's `FuzzySelect` item list, which calls
+        // `to_string()` on each item for both rendering and fuzzy-match
+        // indexing - embedded ANSI escape codes would corrupt its
+        // character-based highlighting.
         write!(f, "({}) [{}] {}", self.instance_id, self.state, self.name)
     }
 }
@@ -75,13 +82,19 @@ impl<'a> Instance<'a> {
     /// state.
     pub fn start_and_wait(&self) -> Result<()> {
         let instance_id = &self.instance_id;
+        let profile = self.client.profile();
         println!("Starting instance {instance_id}...");
-        AwsCommand::start_instances(self.client.profile(), instance_id)?;
+        AwsCommand::start_instances(profile, instance_id)?;
 
-        println!("Waiting for instance {instance_id} to reach 'running'...");
-        AwsCommand::wait_instance_running(self.client.profile(), instance_id)?;
+        with_spinner(
+            &format!("Waiting for instance {instance_id} to reach 'running'..."),
+            || AwsCommand::wait_instance_running(profile, instance_id),
+        )?;
 
-        println!("Instance {instance_id} is now running.");
+        println!(
+            "Instance {instance_id} is now {}.",
+            style("running").green()
+        );
         Ok(())
     }
 
@@ -89,13 +102,16 @@ impl<'a> Instance<'a> {
     /// state.
     pub fn stop_and_wait(&self) -> Result<()> {
         let instance_id = &self.instance_id;
+        let profile = self.client.profile();
         println!("Stopping instance {instance_id}...");
-        AwsCommand::stop_instances(self.client.profile(), instance_id)?;
+        AwsCommand::stop_instances(profile, instance_id)?;
 
-        println!("Waiting for instance {instance_id} to reach 'stopped'...");
-        AwsCommand::wait_instance_stopped(self.client.profile(), instance_id)?;
+        with_spinner(
+            &format!("Waiting for instance {instance_id} to reach 'stopped'..."),
+            || AwsCommand::wait_instance_stopped(profile, instance_id),
+        )?;
 
-        println!("Instance {instance_id} is now stopped.");
+        println!("Instance {instance_id} is now {}.", style("stopped").red());
         Ok(())
     }
 
@@ -140,7 +156,10 @@ impl<'a> Instance<'a> {
         // detailed invocation status/stderr below, so the error itself
         // is only used as a "did it succeed" signal here rather than
         // being propagated directly.
-        let wait_result = AwsCommand::wait_command_executed(profile, &command_id, instance_id);
+        let wait_result = with_spinner(
+            &format!("Waiting for the SSM command on {instance_id} to finish..."),
+            || AwsCommand::wait_command_executed(profile, &command_id, instance_id),
+        );
 
         let invocation: CommandInvocation =
             AwsCommand::get_command_invocation(profile, &command_id, instance_id)?;
