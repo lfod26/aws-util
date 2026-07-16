@@ -10,7 +10,8 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(
     name = "aws-util",
-    about = "Start or stop a configured EC2 instance via the `aws` CLI"
+    about = "Start or stop a configured EC2 instance via the `aws` CLI",
+    version
 )]
 pub struct Cli {
     /// Run the interactive configuration procedure to add or edit a

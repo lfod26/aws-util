@@ -7,15 +7,14 @@ name: Release
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-and-release:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Read version from Cargo.toml
         id: version
@@ -48,14 +47,14 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package binary
+      - name: Rename binary with version
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $zipName = "aws-util-$env:VERSION-windows-x86_64.zip"
-          Compress-Archive -Path target/release/aws-util.exe -DestinationPath $zipName
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          $exeName = "aws-util-$env:VERSION-windows-x86_64.exe"
+          Copy-Item target/release/aws-util.exe $exeName
+          echo "EXE_NAME=$exeName" >> $env:GITHUB_ENV
 
       - name: Create and push tag
         shell: pwsh
@@ -71,6 +70,6 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: ${{ env.ZIP_NAME }}
+          files: ${{ env.EXE_NAME }}
           generate_release_notes: true
           draft: true
